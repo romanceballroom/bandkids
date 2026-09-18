@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>聽團仔之夜｜投影牆</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{ --ink:#0B0E1A; --paper:#F4EDE0; }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; height:100%; overflow:hidden;
+    background:var(--ink); color:var(--paper);
+    font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  }
+  .stage{ position:relative; height:100vh; display:flex; align-items:center; justify-content:center; }
+
+  .ticket{
+    width:100vw; height:100vh;
+    background:var(--tpl-bg, #123E8C);
+    color:var(--tpl-fg, #E8323A);
+    border-radius:0;
+    padding:7vh 7vw;
+    position:relative; overflow:hidden; opacity:0;
+    font-family:"Noto Serif TC","PingFang TC","Microsoft JhengHei",serif;
+    font-weight:500;
+    transition:background-color 0.6s ease, color 0.6s ease;
+  }
+  .ticket.show{ opacity:1; }
+  .poster-inner{
+    height:100%;
+    display:flex; flex-direction:column;
+    transition:opacity 0.5s ease;
+  }
+
+  .kicker{
+    font-size:22px; letter-spacing:6px; font-weight:500;
+    display:inline-block; transform:scaleX(0.6); transform-origin:left;
+    opacity:0.75; margin-bottom:6px;
+  }
+
+  /* 推薦的團／歌：單行大字，動態撐滿版面寬度 */
+  .band-block{ margin-bottom:4vh; }
+  .band-block .line{
+    display:inline-block; white-space:nowrap;
+    line-height:1.1; font-weight:500;
+    transform:scaleX(0.6); transform-origin:left;
+  }
+
+  /* 推薦理由：置中底線多行（短）／左對齊緊湊堆疊（長） */
+  .why-block{ flex:1; min-height:0; display:flex; flex-direction:column; }
+  .why-block.tpl-underlined{ justify-content:flex-start; align-items:center; gap:16px; }
+  .why-block.tpl-underlined .line{
+    display:inline-block; white-space:nowrap; font-size:48px; font-weight:500;
+    border-bottom:2px solid currentColor; padding-bottom:0.5px; transform:scaleX(0.6);
+  }
+  .why-block.tpl-plain{ justify-content:flex-start; align-items:flex-start; gap:6px; }
+  .why-block.tpl-plain .line{
+    display:inline-block; white-space:nowrap; font-size:38px; font-weight:500;
+    line-height:1.3; transform:scaleX(1.2); transform-origin:left;
+  }
+
+  .footer{
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap:24px; padding-top:3vh;
+  }
+  .author-tag{
+    font-size:38px; font-weight:500; letter-spacing:1px;
+    display:inline-block; transform:scaleX(0.6); transform-origin:left;
+    white-space:nowrap; overflow:hidden;
+  }
+  .wish-tag{
+    font-size:24px; font-weight:500; letter-spacing:2px;
+    display:inline-block; transform:scaleX(0.6); transform-origin:right;
+    opacity:0.8; text-align:right; white-space:nowrap; overflow:hidden;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="ticket" id="ticket">
+      <div class="poster-inner" id="posterInner"></div>
+    </div>
+  </div>
+
+<script>
+  var APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyI8-QgBqnkcjhJrK7ZcJkKob-_Y0I0IsaZUjpGdO-7GPedKu7SDb6UUveD-Aiv4Pwo/exec";
+  var POLL_MS = 4000;
+  var MIN_DISPLAY_MS = 15000;
+  var FADE_MS = 500;
+
+  var seenIds = new Set();
+  var queue = [];
+  var allItems = [];
+  var randomBag = [];
+  var lastShownId = null;
+  var showing = false;
+  var ticketEl = document.getElementById('ticket');
+  var posterInnerEl = document.getElementById('posterInner');
+
+  var COLOR_PALETTE = [
+    { bg:'#123E8C', fg:'#E8323A' },
+    { bg:'#7A1010', fg:'#E8323A' },
+    { bg:'#0A0A0A', fg:'#C13FD6' }
+  ];
+  var COLOR_STREAK = 10;
+  var colorIndex = 0, colorUseCount = 0;
+
+  function nextColor_(){
+    if (colorUseCount >= COLOR_STREAK) {
+      colorIndex = (colorIndex + 1) % COLOR_PALETTE.length;
+      colorUseCount = 0;
+    }
+    colorUseCount++;
+    return COLOR_PALETTE[colorIndex];
+  }
+
+  function escapeHtml_(s){
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function splitLines_(text){
+    var parts = String(text).match(/[^，。！？；、\n]+[，。！？；、]?/g);
+    return (parts && parts.length) ? parts.map(function(s){ return s.trim(); }).filter(Boolean) : [text];
+  }
+
+  // 單行：先用基準字級量測自然寬度，反推需要多大字級才能在 scaleX 之後撐滿
+  function fitLineToWidth_(lineEl, targetWidth, scaleX, maxSize){
+    var probe = 100;
+    lineEl.style.transform = 'none';
+    lineEl.style.fontSize = probe + 'px';
+    var measured = lineEl.offsetWidth;
+    if (measured <= 0) return;
+    var needed = probe * (targetWidth * 0.94 / scaleX) / measured;
+    lineEl.style.fontSize = Math.max(20, Math.min(needed, maxSize || 220)) + 'px';
+    lineEl.style.transform = 'scaleX(' + scaleX + ')';
+  }
+
+  // 多行：取最長那行需要的字級，所有行套同一個字級
+  function fitBlockLines_(blockEl, targetWidth, scaleX, maxSize){
+    var lines = blockEl.querySelectorAll('.line');
+    if (!lines.length) return;
+    var probe = 100, minRatio = Infinity;
+    lines.forEach(function(line){
+      line.style.transform = 'none';
+      line.style.fontSize = probe + 'px';
+      var measured = line.offsetWidth;
+      if (measured > 0) {
+        var ratio = (targetWidth * 0.94 / scaleX) / measured;
+        if (ratio < minRatio) minRatio = ratio;
+      }
+    });
+    if (!isFinite(minRatio)) return;
+    var finalSize = Math.max(20, Math.min(probe * minRatio, maxSize || 90));
+    lines.forEach(function(line){
+      line.style.fontSize = finalSize + 'px';
+      line.style.transform = 'scaleX(' + scaleX + ')';
+    });
+  }
+
+  // 行數多、超出可用高度時整體等比縮小
+  function fitBlockToHeight_(blockEl, availableHeight){
+    if (!blockEl || availableHeight <= 0) return;
+    var actual = blockEl.scrollHeight;
+    if (actual <= availableHeight) return;
+    var ratio = availableHeight / actual * 0.94;
+    blockEl.querySelectorAll('.line').forEach(function(line){
+      var cur = parseFloat(getComputedStyle(line).fontSize);
+      line.style.fontSize = Math.max(16, cur * ratio) + 'px';
+    });
+  }
+
+  function renderPoster(item){
+    var color = nextColor_();
+    ticketEl.style.setProperty('--tpl-bg', color.bg);
+    ticketEl.style.setProperty('--tpl-fg', color.fg);
+
+    var whyLines = splitLines_(item.why || '');
+    var whyClass = whyLines.length <= 3 ? 'tpl-underlined' : 'tpl-plain';
+    var whyHtml = whyLines.map(function(l){
+      return '<div class="line">' + escapeHtml_(l) + '</div>';
+    }).join('');
+
+    posterInnerEl.innerHTML =
+      '<div class="kicker">正在推薦</div>' +
+      '<div class="band-block"><div class="line">' + escapeHtml_(item.band) + '</div></div>' +
+      '<div class="why-block ' + whyClass + '">' + whyHtml + '</div>' +
+      '<div class="footer">' +
+        '<div class="author-tag">' + escapeHtml_(item.nick || '不具名') + '</div>' +
+        (item.wish ? '<div class="wish-tag">下次想聽　' + escapeHtml_(item.wish) + '</div>' : '<div></div>') +
+      '</div>';
+
+    var width = posterInnerEl.clientWidth;
+    var bandLine = posterInnerEl.querySelector('.band-block .line');
+    if (bandLine && width > 0) fitLineToWidth_(bandLine, width, 0.6, 200);
+
+    var whyBlock = posterInnerEl.querySelector('.why-block');
+    var scaleXValue = whyClass === 'tpl-underlined' ? 0.6 : 1.2;
+    fitBlockLines_(whyBlock, width, scaleXValue, 86);
+    fitBlockToHeight_(whyBlock, whyBlock.clientHeight);
+  }
+
+  function shuffle_(arr){
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = a[i]; a[i] = a[j]; a[j] = tmp;
+    }
+    return a;
+  }
+
+  // 洗牌抽卡：一輪播完才重洗，同一輪內不會重複
+  function pickRandom_(){
+    if (allItems.length === 0) return null;
+    if (allItems.length === 1) return allItems[0];
+    if (randomBag.length === 0) {
+      randomBag = shuffle_(allItems);
+      if (randomBag[0].id === lastShownId) {
+        var tmp = randomBag[0]; randomBag[0] = randomBag[1]; randomBag[1] = tmp;
+      }
+    }
+    return randomBag.shift();
+  }
+
+  function showNext(){
+    if (showing) return;
+    var item = queue.length > 0 ? queue.shift() : pickRandom_();
+    if (!item) return;
+
+    showing = true;
+    lastShownId = item.id;
+
+    if (!ticketEl.classList.contains('show')) {
+      renderPoster(item);
+      ticketEl.classList.add('show');
+      holdThenNext_();
+    } else {
+      posterInnerEl.style.opacity = '0';
+      setTimeout(function(){
+        renderPoster(item);
+        posterInnerEl.style.opacity = '1';
+        holdThenNext_();
+      }, FADE_MS);
+    }
+  }
+
+  function holdThenNext_(){
+    setTimeout(function(){ showing = false; showNext(); }, MIN_DISPLAY_MS);
+  }
+
+  function poll(){
+    fetch(APPS_SCRIPT_URL + '?t=' + Date.now())
+      .then(function(r){ return r.json(); })
+      .then(function(list){
+        list.sort(function(a,b){ return a.time - b.time; });
+        var visibleIds = {};
+        list.forEach(function(item){
+          visibleIds[item.id] = true;
+          var known = allItems.some(function(p){ return p.id === item.id; });
+          if (!known) {
+            if (!seenIds.has(item.id)) queue.push(item); // 全新投稿才插隊優先播
+            allItems.push(item);
+            seenIds.add(item.id);
+          }
+        });
+        // 同步 admin 的下架狀態
+        allItems = allItems.filter(function(p){ return visibleIds[p.id]; });
+        queue = queue.filter(function(p){ return visibleIds[p.id]; });
+        randomBag = randomBag.filter(function(p){ return visibleIds[p.id]; });
+        showNext();
+      })
+      .catch(function(err){ console.error('poll error', err); });
+  }
+
+  // 等字體載完再開始，不然量測寬度會跑版
+  function start_(){ poll(); setInterval(poll, POLL_MS); }
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(start_); } else { start_(); }
+</script>
+</body>
+</html>
